@@ -1,0 +1,20 @@
+services:
+  api:
+    build: 
+      context: ./backend
+    container_name: merlin-api
+    restart: always
+    network_mode: "host"
+    env_file:
+      - ./backend/.env
+
+  ui:
+    build: 
+      context: ./frontend
+    container_name: merlin-ui
+    restart: always
+    ports:
+      # Changed from 80:80 to 8080:80 to avoid the 'address already in use' error
+      - "8080:80"
+    depends_on:
+      - api

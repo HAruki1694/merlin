@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Merlin - Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="./style.css">
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>Merlin Dashboard</h1>
+        <div style="display: flex; gap: 1rem; align-items: center;">
+          <button class="add-agent-btn" onclick="openAddAgentModal()">+ Add Agent</button>
+          <div class="status-indicator">
+            <span class="dot"></span>
+            <span id="connection-status">Connecting...</span>
+          </div>
+        </div>
+      </header>
+      
+      <nav class="tab-bar" id="tab-bar">
+        <!-- Tabs will be injected here -->
+      </nav>
+      
+      <!-- Custom Tag Modal -->
+      <div id="tag-modal" class="modal-overlay hidden">
+        <div class="modal-content glass">
+          <h2>Create New Tag</h2>
+          <input type="text" id="modal-tag-input" placeholder="Tag name..." onkeypress="if(event.key === 'Enter') submitGlobalTag()" />
+          <div class="modal-actions">
+            <button onclick="closeTagModal()" class="btn-cancel">Cancel</button>
+            <button onclick="submitGlobalTag()" class="btn-primary">Create</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Add Agent Modal -->
+      <div id="add-agent-modal" class="modal-overlay hidden">
+        <div class="modal-content glass" style="width: 600px;">
+          <h2>How to Add a New Agent</h2>
+          <p style="color: var(--text-secondary); font-size: 0.875rem;">Run the following script on your target machine to connect it to Merlin.</p>
+          
+          <h3 style="font-size: 1rem; margin-top: 1rem;">One-Click Install (No External Downloads)</h3>
+          <p style="color: var(--text-secondary); font-size: 0.8rem; margin-bottom: 0.5rem;">Copy and paste this entire block into your server's terminal.</p>
+          <div class="code-block" style="max-height: 350px; overflow-y: auto; position: relative; padding-top: 2.5rem;">
+            <button onclick="copyInstallScript()" style="position: absolute; top: 10px; right: 10px; background: var(--accent); color: white; border: none; padding: 0.3rem 0.6rem; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 0.75rem;">Copy</button>
+            <pre><code id="install-script-code">Generating script...</code></pre>
+          </div>
+
+          <div class="modal-actions" style="margin-top: 1.5rem;">
+            <button onclick="closeAddAgentModal()" class="btn-primary">Got it!</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Delete Tag Modal -->
+      <div id="delete-tag-modal" class="modal-overlay hidden">
+        <div class="modal-content glass">
+          <h2>Delete Tag</h2>
+          <p style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.5;">Are you sure you want to delete the tag <strong id="delete-tag-name" style="color: var(--accent);"></strong>? This will permanently remove it from all machines.</p>
+          <div class="modal-actions" style="margin-top: 1.5rem;">
+            <button onclick="closeDeleteTagModal()" class="btn-cancel">Cancel</button>
+            <button onclick="confirmDeleteGlobalTag()" class="btn-primary" style="background: var(--color-danger);">Delete</button>
+          </div>
+        </div>
+      </div>
+      
+      <main>
+        <div id="nodes-container" class="grid-layout">
+          <!-- Server cards will be injected here by main.js -->
+        </div>
+      </main>
+    </div>
+
+<script type="text/plain" id="agent-script-template">
+cat << 'MERLIN_INSTALL_EOF' | sudo bash
+echo "Installing Merlin Agent..."
+
+cat << 'AGENT_EOF' > /usr/local/bin/merlin_agent.sh
+#!/bin/bash
+BACKEND_URL="${MERLIN_BACKEND_URL:-__BACKEND_URL__}"
+HOSTNAME=$(hostname)
+
+if [ ! -f "/tmp/merlin_agent_id.txt" ]; then
+    tr -dc 'a-f0-9' < /dev/urandom | head -c 8 > "/tmp/merlin_agent_id.txt"
+fi
+AGENT_ID=$(cat "/tmp/merlin_agent_id.txt")
+
+while true; do
+    CPU_IDLE=$(vmstat 1 2 | tail -1 | awk '{print $15}')
+    CPU_PERCENT=$((100 - CPU_IDLE))
+    TOTAL_CPU_CORES=$(nproc)
+
+    TOTAL_RAM_GB=$(free -m | awk '/Mem:/ {printf "%.1f", $2/1024}')
+    RAM_PERCENT=$(free | awk '/Mem:/ {printf "%.1f", $3/$2 * 100.0}')
+
+    TOTAL_DISK_GB=$(df -BG / | awk 'NR==2 {print $2}' | sed 's/G//')
+    DISK_PERCENT=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')
+
+    IP_ADDRESS=$(hostname -I | awk '{print $1}')
+    if [ -z "$IP_ADDRESS" ]; then
+        IP_ADDRESS="127.0.0.1"
+    fi
+
+    if ss -tln | grep -q ":22 "; then
+        SSH_STATUS="true"
+    else
+        SSH_STATUS="false"
+    fi
+
+    JSON_PAYLOAD=$(cat <<PAYLOAD_EOF
+{
+    "agent_id": "$AGENT_ID",
+    "hostname": "$HOSTNAME",
+    "ip_address": "$IP_ADDRESS",
+    "cpu_percent": $CPU_PERCENT,
+    "ram_percent": $RAM_PERCENT,
+    "disk_percent": $DISK_PERCENT,
+    "total_cpu_cores": $TOTAL_CPU_CORES,
+    "total_ram_gb": $TOTAL_RAM_GB,
+    "total_disk_gb": $TOTAL_DISK_GB,
+    "ssh_status": $SSH_STATUS
+}
+PAYLOAD_EOF
+)
+
+    curl -s -X POST -H "Content-Type: application/json" -d "$JSON_PAYLOAD" "$BACKEND_URL" > /dev/null
+
+    if [ $? -ne 0 ]; then
+        echo "[$(date +'%H:%M:%S')] Failed to connect to Backend at $BACKEND_URL" >&2
+    fi
+    sleep 2
+done
+AGENT_EOF
+
+chmod +x /usr/local/bin/merlin_agent.sh
+
+cat << 'SERVICE_EOF' > /etc/systemd/system/merlin-agent.service
+[Unit]
+Description=Merlin Telemetry Agent
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /usr/local/bin/merlin_agent.sh
+Restart=always
+RestartSec=3
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+SERVICE_EOF
+
+systemctl daemon-reload
+systemctl enable merlin-agent
+systemctl restart merlin-agent
+echo "Merlin Agent installed and running!"
+MERLIN_INSTALL_EOF
+</script>
+
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

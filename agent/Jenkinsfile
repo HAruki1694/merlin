@@ -1,0 +1,60 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'TARGET_IP', defaultValue: '', description: 'IP address of the target Ubuntu VM')
+        string(name: 'SSH_USER', defaultValue: 'root', description: 'SSH Username (usually root or ubuntu)')
+        password(name: 'SSH_PASS', defaultValue: '', description: 'SSH Password')
+    }
+
+    stages {
+        stage('Deploy Agent') {
+            steps {
+                script {
+                    // We use sshpass to pass the password to ssh and scp commands
+                    // In a real production environment, you should use SSH Keys instead of passwords!
+                    
+                    def sshArgs = "-o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP}"
+                    def scpArgs = "-o StrictHostKeyChecking=no"
+                    
+                    echo "Deploying Merlin Agent to ${params.TARGET_IP}..."
+
+                    // 1. Create directory on target
+                    sh "sshpass -p '${params.SSH_PASS}' ssh ${sshArgs} 'mkdir -p /opt/merlin-agent'"
+
+                    // 2. Copy the bash script to the target
+                    sh "sshpass -p '${params.SSH_PASS}' scp ${scpArgs} agent/merlin_agent.sh ${params.SSH_USER}@${params.TARGET_IP}:/opt/merlin-agent/merlin_agent.sh"
+                    sh "sshpass -p '${params.SSH_PASS}' ssh ${sshArgs} 'chmod +x /opt/merlin-agent/merlin_agent.sh'"
+
+                    // 3. Create the systemd service file directly on the target
+                    def serviceFileContent = """
+[Unit]
+Description=Merlin Monitoring Agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/merlin-agent
+ExecStart=/opt/merlin-agent/merlin_agent.sh
+Restart=always
+RestartSec=5
+Environment="MERLIN_BACKEND_URL=http://YOUR_BACKEND_IP:8000/api/metrics"
+
+[Install]
+WantedBy=multi-user.target
+                    """
+                    
+                    // Write the service file content to a temporary file locally, then scp it over
+                    writeFile file: 'merlin-agent.service', text: serviceFileContent
+                    sh "sshpass -p '${params.SSH_PASS}' scp ${scpArgs} merlin-agent.service ${params.SSH_USER}@${params.TARGET_IP}:/etc/systemd/system/merlin-agent.service"
+
+                    // 4. Reload systemd and start the service on the target
+                    sh "sshpass -p '${params.SSH_PASS}' ssh ${sshArgs} 'systemctl daemon-reload && systemctl enable merlin-agent && systemctl restart merlin-agent'"
+                    
+                    echo "✅ Boom! Agent successfully deployed and running on ${params.TARGET_IP}!"
+                }
+            }
+        }
+    }
+}
