@@ -21,3 +21,6 @@ Thumbs.db
 
 # Project specifics
 /tmp/merlin_agent_id.txt
+*.ovpn
+creds.txt
+.env
