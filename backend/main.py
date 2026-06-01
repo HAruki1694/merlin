@@ -4,9 +4,11 @@ from pydantic import BaseModel
 import json
 from typing import List, Dict
 import os
+import time
 # pyrefly: ignore [missing-import]
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
+import asyncio
 
 load_dotenv()
 
@@ -20,7 +22,54 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+@app.on_event("startup")
+async def startup_event():
+    # Load all existing machines into active_agents
+    cursor = agents_collection.find({})
+    async for doc in cursor:
+        agent_id = doc.get("agent_id")
+        if agent_id:
+            last_seen = doc.get("last_seen", 0)
+            status = doc.get("status", "reachable")
+            
+            active_agents[agent_id] = {
+                "agent_id": agent_id,
+                "hostname": doc.get("hostname", "Unknown"),
+                "ip_address": doc.get("ip_address", "Unknown"),
+                "cpu_percent": 0.0,
+                "ram_percent": 0.0,
+                "disk_percent": 0.0,
+                "total_cpu_cores": 0,
+                "total_ram_gb": 0.0,
+                "total_disk_gb": 0.0,
+                "ssh_status": False,
+                "tags": doc.get("tags", []),
+                "last_seen": last_seen,
+                "status": status
+            }
+
+    # Start the background task to monitor for unreachable agents
+    asyncio.create_task(watchdog_task())
+
+async def watchdog_task():
+    while True:
+        await asyncio.sleep(5)
+        current_time = int(time.time())
+        for agent_id, agent_data in active_agents.items():
+            # If haven't seen in > 30 seconds and not already unreachable
+            if current_time - agent_data.get("last_seen", 0) > 30:
+                if agent_data.get("status") != "unreachable":
+                    agent_data["status"] = "unreachable"
+                    await agents_collection.update_one(
+                        {"agent_id": agent_id},
+                        {"$set": {"status": "unreachable"}}
+                    )
+                    await manager.broadcast({
+                        "type": "update",
+                        "data": agent_data
+                    })
+
+MONGO_URL = os.environ.get("MONGO_URL")
 client = AsyncIOMotorClient(MONGO_URL)
 db = client.merlin
 agents_collection = db.agents
@@ -71,18 +120,33 @@ manager = ConnectionManager()
 @app.post("/api/metrics")
 async def receive_metrics(metrics: AgentMetrics):
     metrics_dict = metrics.model_dump()
+    current_time = int(time.time())
+    metrics_dict["last_seen"] = current_time
+    metrics_dict["status"] = "reachable"
     
+    # Update DB with latest info
+    await agents_collection.update_one(
+        {"agent_id": metrics.agent_id},
+        {
+            "$set": {
+                "ip_address": metrics.ip_address,
+                "hostname": metrics.hostname,
+                "last_seen": current_time,
+                "status": "reachable"
+            },
+            "$setOnInsert": {
+                "agent_id": metrics.agent_id,
+                "tags": []
+            }
+        },
+        upsert=True
+    )
+
     # Fetch tags from DB
     agent_doc = await agents_collection.find_one({"agent_id": metrics.agent_id})
     if agent_doc and "tags" in agent_doc:
         metrics_dict["tags"] = agent_doc["tags"]
     else:
-        # Initialize in DB if first time seen
-        await agents_collection.update_one(
-            {"agent_id": metrics.agent_id},
-            {"$setOnInsert": {"agent_id": metrics.agent_id, "tags": []}},
-            upsert=True
-        )
         metrics_dict["tags"] = []
 
     active_agents[metrics.agent_id] = metrics_dict

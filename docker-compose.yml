@@ -1,20 +1,37 @@
 services:
+  vpn:
+    build:
+      context: ./vpn
+    container_name: merlin-vpn
+    restart: always
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    devices:
+      - /dev/net/tun
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
   api:
-    build: 
+    build:
       context: ./backend
     container_name: merlin-api
     restart: always
-    network_mode: "host"
+    network_mode: "service:vpn" # <-- routes ALL api traffic through vpn
     env_file:
       - ./backend/.env
+    depends_on:
+      - vpn
 
   ui:
-    build: 
+    build:
       context: ./frontend
     container_name: merlin-ui
     restart: always
     ports:
-      # Changed from 80:80 to 8080:80 to avoid the 'address already in use' error
       - "8080:80"
     depends_on:
       - api

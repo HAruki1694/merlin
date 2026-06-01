@@ -92,11 +92,11 @@ function connect() {
     };
 }
 
-function createCardHTML(agent) {
+function createCardHTML(agent, isDead) {
     const tags = agent.tags || [];
-    const tagsHTML = tags.map(tag => 
-        `<span class="tag" onclick="removeTag('${agent.agent_id}', '${tag}')">${tag}</span>`
-    ).join('');
+    const tagsHTML = tags.length > 0 
+        ? tags.map(tag => `<span class="tag" onclick="removeTag('${agent.agent_id}', '${tag}')">${tag}</span>`).join('')
+        : `<span class="no-tag-assigned" style="color: #9CA3AF; font-size: 0.85rem; font-style: italic;">No tag assigned</span>`;
 
     const availableTags = globalTags.filter(t => !tags.includes(t));
     const optionsHTML = availableTags.map(t => `<option value="${t}">${t}</option>`).join('');
@@ -113,7 +113,10 @@ function createCardHTML(agent) {
         ? `<span class="ssh-status ssh-good">● Good to go</span>` 
         : `<span class="ssh-status ssh-failed">● Failed</span>`;
 
+    const unreachableBanner = isDead ? `<div class="unreachable-banner">UNREACHABLE</div>` : '';
+
     return `
+        ${unreachableBanner}
         <div class="card-header">
             <span class="agent-id">ID: ${agent.agent_id}</span>
             <h3 class="ip-address">${agent.ip_address}</h3>
@@ -149,6 +152,15 @@ function createCardHTML(agent) {
                 </div>
             </div>
         </div>
+        <div class="card-footer">
+            <button class="show-more-btn" onclick="toggleDetails('${agent.agent_id}')">Show More ▼</button>
+            <div class="extra-details hidden" id="details-${agent.agent_id}">
+                <div class="detail-row">
+                    <span class="detail-label">Last Seen:</span>
+                    <span class="detail-value">${agent.last_seen ? new Date(agent.last_seen * 1000).toLocaleString() : 'Never'}</span>
+                </div>
+            </div>
+        </div>
     `;
 }
 
@@ -162,11 +174,7 @@ function renderAll() {
     nodesContainer.innerHTML = '';
     agents.forEach(agent => {
         if (shouldShowAgent(agent)) {
-            const card = document.createElement('div');
-            card.className = 'node-card glass';
-            card.id = `agent-${agent.agent_id}`;
-            card.innerHTML = createCardHTML(agent);
-            nodesContainer.appendChild(card);
+            updateOrRenderCard(agent);
         }
     });
 }
@@ -180,11 +188,31 @@ function shouldShowAgent(agent) {
 function updateOrRenderCard(agent) {
     let card = document.getElementById(`agent-${agent.agent_id}`);
     const shouldShow = shouldShowAgent(agent);
+    
+    const isDead = agent.status === 'unreachable';
+
+    // Preserve the state of the "Show More" section if the card exists
+    let isDetailsExpanded = false;
+    if (card) {
+        const detailsElem = card.querySelector(`#details-${agent.agent_id}`);
+        if (detailsElem && !detailsElem.classList.contains('hidden')) {
+            isDetailsExpanded = true;
+        }
+    }
 
     if (card) {
         if (shouldShow) {
             // Update existing
-            card.innerHTML = createCardHTML(agent);
+            card.className = `node-card glass ${isDead ? 'dead-machine' : ''}`;
+            card.innerHTML = createCardHTML(agent, isDead);
+            
+            // Re-apply expansion state
+            if (isDetailsExpanded) {
+                const detailsElem = card.querySelector(`#details-${agent.agent_id}`);
+                const btn = card.querySelector('.show-more-btn');
+                if (detailsElem) detailsElem.classList.remove('hidden');
+                if (btn) btn.textContent = 'Show Less ▲';
+            }
         } else {
             // Remove because it no longer matches filter
             card.remove();
@@ -192,10 +220,24 @@ function updateOrRenderCard(agent) {
     } else if (shouldShow) {
         // Create new
         card = document.createElement('div');
-        card.className = 'node-card glass fade-in';
+        card.className = `node-card glass fade-in ${isDead ? 'dead-machine' : ''}`;
         card.id = `agent-${agent.agent_id}`;
-        card.innerHTML = createCardHTML(agent);
+        card.innerHTML = createCardHTML(agent, isDead);
         nodesContainer.appendChild(card);
+    }
+}
+
+window.toggleDetails = function(agentId) {
+    const details = document.getElementById(`details-${agentId}`);
+    const card = document.getElementById(`agent-${agentId}`);
+    const btn = card.querySelector('.show-more-btn');
+    
+    if (details.classList.contains('hidden')) {
+        details.classList.remove('hidden');
+        btn.textContent = 'Show Less ▲';
+    } else {
+        details.classList.add('hidden');
+        btn.textContent = 'Show More ▼';
     }
 }
 
@@ -315,6 +357,8 @@ window.removeTag = async function(agentId, tag) {
         console.error('Failed to remove tag', e);
     }
 }
+
+// Periodic check removed since backend now pushes status updates
 
 // Start app
 fetchGlobalTags();
